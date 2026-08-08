@@ -24,6 +24,19 @@ LoRA fine-tuning of **S2-Pro** on the Hebrew data prepared in the Qwen3-TTS repo
   to the symlink (inside `data/hebrew/`), so the source dataset is untouched.
 - **VQ codes from Qwen3-TTS (`audio_codes`) are not reusable** — different
   codec. Everything is re-encoded with the S2-Pro DAC codec.
+- **LoRA recipe: `r_32_alpha_64`** (r=32, α=64, dropout 0.05, ~67M trainable
+  params = 1.45% of the model), targeting slow+fast attention and MLP plus
+  `fast_embeddings`/`fast_output`. The upstream default `r_8_alpha_16` is wrong
+  for S2-Pro: it targets `embeddings`, but S2-Pro ties word embeddings to the
+  output head (`F.linear(x, embeddings.weight)`), and loralib only applies the
+  LoRA delta in the lookup path during training while merging it into the
+  weight on eval — so the output head would differ between training and
+  inference. Its `output` target is also a silent no-op (module doesn't exist
+  when tied). r=8 is additionally undersized for a 135h language adaptation.
+- **Gradient-checkpointing fix (`llama.py`)**: `use_reentrant=True` silently
+  dropped all slow-transformer LoRA gradients when embeddings are frozen (the
+  checkpointed block's input doesn't require grad). Changed to
+  `use_reentrant=False`; verified 202/202 expected params receive gradients.
 
 ## Run
 
@@ -57,16 +70,17 @@ python fish_speech/train.py --config-name text2semantic_hebrew_lora \
 
 Other useful overrides:
 
-- `lora@model.model.lora_config=r_32_alpha_16_fast` — higher-rank LoRA on the
-  fast (acoustic) transformer only; the default `r_8_alpha_16` adapts both slow
-  and fast transformers, which is what a new-language adaptation needs.
+- `lora@model.model.lora_config=r_32_alpha_16_fast` — LoRA on the fast
+  (acoustic) transformer only; useful for timbre-only tweaks, not language
+  adaptation. Note it targets `fast_embeddings`, so it doesn't depend on the
+  embeddings-tying caveat above.
 - `trainer.max_steps=...`, `model.optimizer.lr=...`
 
 ## After training: merge and test
 
 ```bash
 python tools/llama/merge_lora.py \
-    --lora-config r_8_alpha_16 \
+    --lora-config r_32_alpha_64 \
     --base-weight checkpoints/s2-pro \
     --lora-weight results/hebrew_lora/checkpoints/step_000000500.ckpt \
     --output checkpoints/s2-pro-hebrew-lora

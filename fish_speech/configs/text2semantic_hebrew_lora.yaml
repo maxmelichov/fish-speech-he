@@ -1,7 +1,7 @@
 defaults:
   - base
   - _self_
-  - lora@model.model.lora_config: r_8_alpha_16
+  - lora@model.model.lora_config: r_32_alpha_64
 
 project: hebrew_lora
 max_length: 2048
@@ -15,7 +15,9 @@ trainer:
   max_steps: 10000
   precision: bf16-true
   limit_val_batches: 10
-  val_check_interval: 500
+  # val_check_interval counts BATCHES; with accumulate_grad_batches=4 this is
+  # every 500 optimizer steps, matching the checkpoint cadence below.
+  val_check_interval: 2000
 
 # Tokenizer (must point at the checkpoint *directory*: FishTokenizer wraps
 # AutoTokenizer.from_pretrained, which loads tokenizer.json from the dir)
@@ -82,4 +84,4 @@ model:
 # Callbacks (checkpoints are LoRA-only, see TextToSemantic.on_save_checkpoint)
 callbacks:
   model_checkpoint:
-    every_n_train_steps: ${trainer.val_check_interval}
+    every_n_train_steps: 500  # optimizer steps (Lightning global_step)

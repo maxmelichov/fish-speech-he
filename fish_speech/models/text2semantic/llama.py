@@ -367,7 +367,10 @@ class BaseTransformer(nn.Module):
 
         for layer in self.layers:
             if self.config.use_gradient_checkpointing and self.training:
-                x = checkpoint(layer, x, freqs_cis, mask, use_reentrant=True)
+                # use_reentrant=False: the reentrant variant silently drops
+                # parameter gradients when the block input does not require
+                # grad (e.g. LoRA training with frozen embeddings).
+                x = checkpoint(layer, x, freqs_cis, mask, use_reentrant=False)
             else:
                 x = layer(x, freqs_cis, mask)
 
@@ -781,7 +784,7 @@ class DualARTransformer(BaseTransformer):
 
         for layer in self.fast_layers:
             if self.config.use_gradient_checkpointing and self.training:
-                x = checkpoint(layer, x, fast_freqs_cis, fast_mask, use_reentrant=True)
+                x = checkpoint(layer, x, fast_freqs_cis, fast_mask, use_reentrant=False)
             else:
                 x = layer(x, fast_freqs_cis, fast_mask)
 

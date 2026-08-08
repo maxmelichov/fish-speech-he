@@ -1,0 +1,18 @@
+# Language-adaptation LoRA for S2-Pro (tied word embeddings).
+#
+# Slow "embeddings" is deliberately NOT targeted: with tie_word_embeddings=True
+# the token logits are computed as F.linear(x, embeddings.weight), which reads
+# the raw tensor — loralib only applies the LoRA delta in the lookup path during
+# training but merges it into the weight on eval(), so the tied output head
+# would silently change between training and inference. "output" is likewise a
+# no-op on the slow transformer (the module only exists when untied).
+# fast_embeddings / fast_output are separate, untied modules and safe to adapt.
+_target_: fish_speech.models.text2semantic.lora.LoraConfig
+r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+target_modules:
+  - attention        # slow + fast attention (wqkv, wo)
+  - mlp              # slow + fast feed-forward (w1, w2, w3)
+  - fast_embeddings
+  - fast_output
