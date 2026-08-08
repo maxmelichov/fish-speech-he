@@ -74,6 +74,10 @@ There is **no test suite** in this repo. Lint/format is enforced by pre-commit o
 
 **Device handling** is duplicated across entrypoints: each checks mps → xpu → cuda → cpu and picks `torch.half` vs `torch.bfloat16` from `--half`. `--compile` gives a large speedup but is unsupported on Windows/macOS without manually installing Triton.
 
+## Hebrew LoRA training (this fork)
+
+This fork (`origin` = maxmelichov/fish-speech; `upstream` = fishaudio/fish-speech) adds a Hebrew LoRA pipeline under `tools/hebrew/` — see `tools/hebrew/README.md` for design decisions (S2-Pro base, nikud Hebrew text not IPA, U+05AF stripped). Source data comes from `/mnt/windows_nvme/Qwen3-TTS` manifests (~107k usable rows / ~135h, 10 speakers; the `female1`/`male1` speakers are phoneme-only and unusable). Run `tools/hebrew/run_hebrew_pipeline.sh [download|prepare|extract|pack|train]`; training config is `fish_speech/configs/text2semantic_hebrew_lora.yaml`. Note: the upstream `text2semantic_finetune.yaml` has a stale `tokenizer.model_path` pointing at `tokenizer.tiktoken` — `FishTokenizer` needs the checkpoint *directory*.
+
 ## Conventions
 
 - Scripts under `tools/` and `fish_speech/models/*/inference.py` call `pyrootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)` before importing project modules — keep that ordering when adding new entrypoints (isort must not reorder those imports above it).

@@ -1,0 +1,85 @@
+defaults:
+  - base
+  - _self_
+  - lora@model.model.lora_config: r_8_alpha_16
+
+project: hebrew_lora
+max_length: 2048
+pretrained_ckpt_path: checkpoints/s2-pro
+
+# Lightning Trainer
+trainer:
+  accumulate_grad_batches: 4
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: "norm"
+  max_steps: 10000
+  precision: bf16-true
+  limit_val_batches: 10
+  val_check_interval: 500
+
+# Tokenizer (must point at the checkpoint *directory*: FishTokenizer wraps
+# AutoTokenizer.from_pretrained, which loads tokenizer.json from the dir)
+tokenizer:
+  _target_: fish_speech.tokenizer.FishTokenizer
+  model_path: ${pretrained_ckpt_path}
+
+# Dataset Configuration
+train_dataset:
+  _target_: fish_speech.datasets.semantic.AutoTextSemanticInstructionIterableDataset
+  proto_files:
+    - data/hebrew/protos/train
+  tokenizer: ${tokenizer}
+  causal: true
+  max_length: ${max_length}
+  use_speaker: false
+  interactive_prob: 0.7
+
+val_dataset:
+  _target_: fish_speech.datasets.semantic.AutoTextSemanticInstructionIterableDataset
+  proto_files:
+    - data/hebrew/protos/eval
+  tokenizer: ${tokenizer}
+  causal: true
+  max_length: ${max_length}
+  use_speaker: false
+  interactive_prob: 0.7
+
+data:
+  _target_: fish_speech.datasets.semantic.SemanticDataModule
+  train_dataset: ${train_dataset}
+  val_dataset: ${val_dataset}
+  num_workers: 4
+  batch_size: 2
+  tokenizer: ${tokenizer}
+  max_length: ${max_length}
+
+# Model Configuration
+model:
+  _target_: fish_speech.models.text2semantic.lit_module.TextToSemantic
+  model:
+    _target_: fish_speech.models.text2semantic.llama.BaseTransformer.from_pretrained
+    path: ${pretrained_ckpt_path}
+    load_weights: true
+    max_length: ${max_length}
+    lora_config: null  # filled by the lora entry in defaults
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-4
+    weight_decay: 0
+    betas: [0.9, 0.95]
+    eps: 1e-5
+
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.LambdaLR
+    _partial_: true
+    lr_lambda:
+      _target_: fish_speech.scheduler.get_constant_schedule_with_warmup_lr_lambda
+      _partial_: true
+      num_warmup_steps: 100
+
+# Callbacks (checkpoints are LoRA-only, see TextToSemantic.on_save_checkpoint)
+callbacks:
+  model_checkpoint:
+    every_n_train_steps: ${trainer.val_check_interval}
