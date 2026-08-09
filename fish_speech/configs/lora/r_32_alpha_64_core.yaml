@@ -1,0 +1,24 @@
+# Language-adaptation LoRA for S2-Pro: slow + fast attention/MLP, heads frozen.
+#
+# Both transformer stacks must co-adapt: the fast (residual codebook)
+# transformer renders audio from the slow transformer's hidden states, so
+# training the slow side alone drifts those hidden states out of the frozen
+# fast side's calibration — output amplitude decays as training progresses
+# (measured: sample rms 0.024 @ step 200 -> 0.010 @ step 400 with fast frozen,
+# while loss improved). Training the fast side alone (the accidental effect of
+# the use_reentrant bug) ghosts the same way. Upstream's default recipe trains
+# both, and so does Qwen3-TTS SFT.
+#
+# What stays frozen to protect timbre / voice-cloning / other languages:
+#   - fast_embeddings / fast_output: the direct interface to codebook space.
+#   - slow embeddings (tied to the output head; also unsafe to LoRA, see
+#     r_32_alpha_64_slow.yaml for the tie_word_embeddings explanation).
+# And the base weights are untouched by construction (LoRA): the un-merged
+# checkpoint keeps every other language bit-identical.
+_target_: fish_speech.models.text2semantic.lora.LoraConfig
+r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+target_modules:
+  - attention        # slow + fast attention (wqkv, wo)
+  - mlp              # slow + fast feed-forward (w1, w2, w3)

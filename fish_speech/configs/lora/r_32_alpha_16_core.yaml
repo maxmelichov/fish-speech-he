@@ -1,0 +1,18 @@
+# Gentle language-adaptation LoRA for S2-Pro: slow + fast attention/MLP.
+#
+# alpha/r = 0.5 instead of the usual 2.0. Rationale is measured, not guessed:
+# with alpha=64 (scale 2.0) the trained delta destroys free-running generation
+# (sample rms 0.006 vs 0.181 for base), but applying only ~0.2 of that delta at
+# inference is coherent AND carries real accent improvement. 0.2 x 2.0 = 0.4,
+# so training near that effective scale keeps the model in the region that
+# actually generates, instead of dragging it out and scaling back afterwards.
+#
+# Frozen, as in r_32_alpha_64_core: fast_embeddings / fast_output (direct
+# interface to codebook space, carries timbre) and the tied slow embeddings.
+_target_: fish_speech.models.text2semantic.lora.LoraConfig
+r: 32
+lora_alpha: 16
+lora_dropout: 0.05
+target_modules:
+  - attention        # slow + fast attention (wqkv, wo)
+  - mlp              # slow + fast feed-forward (w1, w2, w3)

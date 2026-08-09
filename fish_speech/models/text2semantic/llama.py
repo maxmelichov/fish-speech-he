@@ -342,6 +342,21 @@ class BaseTransformer(nn.Module):
 
         x = self.embeddings(inp[:, 0]) + vq_embeds_sum
 
+        # Must match forward_generate() exactly: with scale_codebook_embeddings
+        # (S2-Pro sets it True) the inference path divides semantic positions by
+        # sqrt(num_codebooks + 1). Without this, training feeds the transformer
+        # inputs ~3.3x larger than inference does at every semantic position, so
+        # fine-tuned weights are adapted to a scale generation never produces —
+        # audio degrades progressively as the model consumes its own tokens,
+        # while teacher-forced CE keeps improving and hides it.
+        if self.config.scale_codebook_embeddings:
+            is_semantic_expanded = is_semantic.unsqueeze(-1).expand_as(x)
+            x = torch.where(
+                is_semantic_expanded,
+                x / math.sqrt(self.config.num_codebooks + 1),
+                x,
+            )
+
         return x
 
     def forward(

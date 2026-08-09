@@ -20,14 +20,17 @@ if [[ "$step" == "prepare" || "$step" == "all" ]]; then
     python tools/hebrew/prepare_hebrew_data.py \
         --train-manifest "$QWEN_TTS_DIR/data/manifests/hebrew_train.jsonl" \
         --eval-manifest "$QWEN_TTS_DIR/data/manifests/hebrew_eval.jsonl" \
-        --output "$DATA"
+        --output "$DATA" \
+        --text-repr "${TEXT_REPR:-ipa}"
 fi
 
 if [[ "$step" == "extract" || "$step" == "all" ]]; then
     echo "==> [3/5] Extracting VQ tokens (uses all GPUs; resumable, skips existing .npy)"
+    # batch-size 8: the DAC encoder OOMs on a 32GB card at 32 with 20s clips
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     python tools/vqgan/extract_vq.py "$DATA" \
         --num-workers "$(nvidia-smi -L | wc -l)" \
-        --batch-size 32 \
+        --batch-size 8 \
         --config-name modded_dac_vq \
         --checkpoint-path "$CKPT/codec.pth"
 fi

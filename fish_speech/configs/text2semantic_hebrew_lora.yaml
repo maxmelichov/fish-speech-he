@@ -1,10 +1,14 @@
 defaults:
   - base
   - _self_
-  - lora@model.model.lora_config: r_32_alpha_64
+  - lora@model.model.lora_config: r_32_alpha_16_core
 
 project: hebrew_lora
 max_length: 2048
+# The model's positional buffers are sized separately from the training window:
+# generate_long() refuses prompts longer than (max_seq_len - 2048), so sampling
+# during training needs headroom above the 2048-token training sequences.
+model_max_length: 4096
 pretrained_ckpt_path: checkpoints/s2-pro
 
 # Lightning Trainer
@@ -26,49 +30,65 @@ tokenizer:
   model_path: ${pretrained_ckpt_path}
 
 # Dataset Configuration
+# InferenceMatchedIterableDataset trains on the EXACT generate_long() prompt
+# format, with same-speaker voice-cloning reference conditioning (ref_prob) —
+# mirroring how Qwen3-TTS SFT conditions every row on a reference utterance.
 train_dataset:
-  _target_: fish_speech.datasets.semantic.AutoTextSemanticInstructionIterableDataset
+  _target_: fish_speech.datasets.semantic.InferenceMatchedIterableDataset
   proto_files:
     - data/hebrew/protos/train
   tokenizer: ${tokenizer}
   causal: true
   max_length: ${max_length}
   use_speaker: false
-  interactive_prob: 0.7
+  interactive_prob: 0.7  # unused by this dataset; kept for signature compat
+  ref_prob: 0.8
 
 val_dataset:
-  _target_: fish_speech.datasets.semantic.AutoTextSemanticInstructionIterableDataset
+  _target_: fish_speech.datasets.semantic.InferenceMatchedIterableDataset
   proto_files:
     - data/hebrew/protos/eval
   tokenizer: ${tokenizer}
   causal: true
   max_length: ${max_length}
   use_speaker: false
-  interactive_prob: 0.7
+  interactive_prob: 0.7  # unused by this dataset; kept for signature compat
+  ref_prob: 0.8
 
 data:
   _target_: fish_speech.datasets.semantic.SemanticDataModule
   train_dataset: ${train_dataset}
   val_dataset: ${val_dataset}
   num_workers: 4
-  batch_size: 2
+  batch_size: 3
   tokenizer: ${tokenizer}
   max_length: ${max_length}
 
 # Model Configuration
 model:
   _target_: fish_speech.models.text2semantic.lit_module.TextToSemantic
+  # Down-weight the fast-transformer residual-codebook loss (Qwen3-TTS uses
+  # 0.3 for its equivalent sub-talker term). With the fast stack frozen, that
+  # loss only shapes the slow hidden states; at weight 1.0 it dominated the
+  # gradient (semantic_loss ~4.4 vs base_loss ~2.8), pulling training away
+  # from the text->semantic mapping that Hebrew adaptation actually needs.
+  semantic_loss_weight: 0.3
+  # Anchor to the frozen base model (reverse KL at loss positions). Both the
+  # alpha=64 and alpha=16 runs collapsed free-running generation while CE
+  # improved; the anchor penalizes the drift itself. See lit_module.
+  base_kl_weight: 0.0  # off: the train/inference embedding-scale bug is fixed
   model:
     _target_: fish_speech.models.text2semantic.llama.BaseTransformer.from_pretrained
     path: ${pretrained_ckpt_path}
     load_weights: true
-    max_length: ${max_length}
+    max_length: ${model_max_length}
     lora_config: null  # filled by the lora entry in defaults
 
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
-    lr: 1e-4
+    # 5e-5: the lr of the successful Qwen3-TTS Hebrew LoRA run
+    lr: 5e-5
     weight_decay: 0
     betas: [0.9, 0.95]
     eps: 1e-5
@@ -84,4 +104,36 @@ model:
 # Callbacks (checkpoints are LoRA-only, see TextToSemantic.on_save_checkpoint)
 callbacks:
   model_checkpoint:
-    every_n_train_steps: 500  # optimizer steps (Lightning global_step)
+    every_n_train_steps: 200  # optimizer steps (Lightning global_step)
+
+  # Synthesize audio from fixed Hebrew prompts every N optimizer steps.
+  # Runs on rank 0 only (other ranks wait at the next allreduce), logs to
+  # TensorBoard under "samples/" and writes results/hebrew_lora/samples/.
+  sample_audio:
+    _target_: fish_speech.callbacks.SampleAudioCallback
+    every_n_train_steps: 200
+    codec_checkpoint_path: ${pretrained_ckpt_path}/codec.pth
+    max_new_tokens: 512      # ~24s of audio at the codec's ~21.5Hz frame rate
+    temperature: 0.7
+    top_p: 0.7
+    top_k: 30
+    # Voice-cloning reference: a held-out eval utterance, so the samples are
+    # conditioned exactly the way real inference will be. prompt_text must be
+    # the transcript of prompt_audio, in the same representation as the .lab
+    # files (IPA). Set both to null for unconditioned samples.
+    prompt_audio: data/hebrew/eval/male3/utt_1270581.wav
+    prompt_text: "veʔaχˈen jˈeʃ ɡˈam hevdelˈim tehomijˈim bˈen haʔemdˈa ʃebitˈe ʔamitˈi, χavˈeʁ haknˈeset dˈan tiχˈon, levˈen ʔemdatˈi."
+    # IPA, matching the .lab text representation (--text-repr ipa). These must
+    # be phonemized the same way at inference time; feeding nikud here would
+    # be out of distribution for the fine-tuned model.
+    texts:
+      # "שהציבור הישראלי לא מסוגל להבין את מה הממשלה הזו מקדמת?"
+      - "ʃehatsibˈuʁ hajisʁaʔelˈi lˈo mesuɡˈal lehavˈin ʔˈet mˈa hamemʃalˈa hazˈo mekadˈemet?"
+      # "לאחר שיור הקואליציה יסיים לדבר, נעשה הצבעה חוזרת."
+      - "leʔaχˈaʁ ʃejˈuʁ hakoʔalˈitsja jesajˈem ledabˈeʁ, naʔasˈe hatsbaʔˈa χozˈeʁet."
+      # "הוא קפץ פנימה, היחיד שקפץ פנימה, צלל לתוך המים."
+      - "hˈu kafˈats pnˈima, hajaχˈid ʃekafˈats pnˈima, tsalˈal letˈoχ hamˈajim."
+      # English regression probe (plain text, not IPA): watches whether the
+      # adapter degrades other languages. Pick the last checkpoint where this
+      # still sounds right.
+      - "The committee approved the proposal after a long debate yesterday evening."

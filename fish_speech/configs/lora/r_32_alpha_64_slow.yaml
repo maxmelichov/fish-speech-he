@@ -1,0 +1,25 @@
+# Language-adaptation LoRA for S2-Pro: text -> semantic only.
+#
+# The fast (residual codebook) transformer is left ENTIRELY FROZEN. That is the
+# module that turns the slow transformer's semantic tokens into the 9 acoustic
+# codebooks, i.e. it carries timbre and voice-cloning behaviour; adapting it on
+# a 12-speaker corpus trades away the base model's audio quality and its
+# cloning generality for nothing that Hebrew pronunciation needs.
+#
+# Gradients still reach the slow transformer through the frozen fast stack, so
+# the semantic (codebook) loss continues to train the part we do adapt.
+#
+# Slow "embeddings" is deliberately NOT targeted either: with
+# tie_word_embeddings=True the token logits are computed as
+# F.linear(x, embeddings.weight), which reads the raw tensor — loralib only
+# applies the LoRA delta in the lookup path during training but merges it into
+# the weight on eval(), so the tied output head would silently differ between
+# training and inference. "slow_output" is likewise a no-op when tied (the
+# module only exists when untied).
+_target_: fish_speech.models.text2semantic.lora.LoraConfig
+r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+target_modules:
+  - slow_attention   # slow-only attention (wqkv, wo)
+  - slow_mlp         # slow-only feed-forward (w1, w2, w3)

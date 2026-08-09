@@ -461,6 +461,162 @@ class AutoTextSemanticInstructionDataset(Dataset):
         return tokens, labels
 
 
+class InferenceMatchedIterableDataset(AutoTextSemanticInstructionIterableDataset):
+    """Training samples in the EXACT prompt format used by generate_long().
+
+    The stock fine-tuning format ("Speak out the provided text.<|speaker:user|>
+    ...") never shows the model the inference prompt — neither the
+    "convert the provided text to speech" system message, the <|im_start|>
+    role structure, nor reference (voice-clone) conditioning. Fine-tuning on it
+    teaches the model a format that inference never uses.
+
+    This dataset instead mirrors fish_speech/models/text2semantic/inference.py:
+    with probability ``ref_prob`` (and >= 2 utterances in the sampled speaker
+    group) one utterance becomes the voice-cloning reference in the system
+    message and the rest become user/assistant turns; otherwise the
+    unconditioned system message is used. Loss is calculated only on the
+    assistant turns (semantic tokens + <|im_end|>), matching what generation
+    must produce. This is also how Qwen3-TTS SFT works: every row is
+    conditioned on a same-speaker reference utterance.
+    """
+
+    def __init__(self, *args, ref_prob: float = 0.8, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert 0 <= ref_prob <= 1, "ref_prob must be in [0, 1]"
+        self.ref_prob = ref_prob
+
+    @staticmethod
+    def _codes_tensor(sentence) -> torch.Tensor:
+        return torch.tensor(
+            [x.values for x in sentence.semantics], dtype=torch.int32
+        )
+
+    def _build_conversation(self, ref, targets):
+        from fish_speech.conversation import Conversation, Message
+
+        conversation = Conversation()
+
+        # System message: byte-identical to generate_long()
+        if ref is not None:
+            ref_text, ref_codes = ref
+            system_parts = [
+                TextPart(
+                    text="convert the provided text to speech reference to the following:\n\nText:\n",
+                    cal_loss=False,
+                ),
+                TextPart(text=f"<|speaker:0|>{ref_text}", cal_loss=False),
+                TextPart(text="\n\nSpeech:\n", cal_loss=False),
+                VQPart(codes=ref_codes, cal_loss=False),
+            ]
+        else:
+            system_parts = [
+                TextPart(text="convert the provided text to speech", cal_loss=False)
+            ]
+
+        conversation.append(
+            Message(
+                role="system",
+                parts=system_parts,
+                cal_loss=False,
+                add_im_start=True,
+                add_im_end=True,
+            )
+        )
+
+        for text, codes in targets:
+            conversation.append(
+                Message(
+                    role="user",
+                    parts=[TextPart(text=text, cal_loss=False)],
+                    cal_loss=False,
+                    add_im_start=True,
+                    add_im_end=True,
+                )
+            )
+            conversation.append(
+                Message(
+                    role="assistant",
+                    parts=[VQPart(codes=codes, cal_loss=True)],
+                    cal_loss=True,
+                    modality="voice",
+                    add_im_start=True,
+                    add_im_end=True,
+                )
+            )
+
+        return conversation
+
+    def _encode(self, ref, targets):
+        conversation = self._build_conversation(ref, targets)
+        # Not Conversation.encode(): it forwards a max_length kwarg that
+        # ContentSequence.encode() does not accept.
+        encoded = conversation.to_content_sequence().encode(self.tokenizer)
+
+        num_codebooks = (
+            targets[0][1].size(0) if self.num_codebooks is None else self.num_codebooks
+        )
+
+        tokens_raw = encoded.tokens
+        tokens = torch.zeros((num_codebooks + 1, len(tokens_raw)), dtype=torch.int)
+        tokens[0] = tokens_raw
+
+        vq_parts = encoded.vq_parts
+        vq_parts = [part.to(tokens.device) for part in vq_parts]
+        vq_parts = torch.cat(vq_parts, dim=1)
+        tokens[1:, encoded.vq_mask_tokens] = vq_parts
+
+        labels_raw = encoded.labels
+        labels = torch.full((num_codebooks + 1, len(labels_raw)), -100, dtype=torch.int)
+        labels[0, :] = labels_raw
+        labels[1:, encoded.vq_mask_labels] = vq_parts
+
+        tokens = tokens.long()
+        labels = labels.long()
+
+        assert (tokens[1:, ~(encoded.vq_mask_tokens)] == CODEBOOK_PAD_TOKEN_ID).all()
+
+        return tokens, labels
+
+    def augment(self):
+        response = self.sample_data()
+        if len(response.samples) == 0:
+            return None
+
+        samples = list(response.samples)
+        random.shuffle(samples)
+
+        ref = None
+        if len(samples) >= 2 and random.random() < self.ref_prob:
+            sentence = samples.pop()
+            ref = (
+                clean_text(random.choice(sentence.texts)),
+                self._codes_tensor(sentence),
+            )
+
+        # Add target turns until the encoded sequence would exceed max_length.
+        targets = []
+        tokens = labels = None
+        for sentence in samples:
+            targets.append(
+                (
+                    clean_text(random.choice(sentence.texts)),
+                    self._codes_tensor(sentence),
+                )
+            )
+            new_tokens, new_labels = self._encode(ref, targets)
+            if tokens is not None and new_tokens.size(1) > self.max_length:
+                targets.pop()
+                break
+            tokens, labels = new_tokens, new_labels
+            if tokens.size(1) >= self.max_length:
+                break
+
+        if tokens is None:
+            return None
+
+        return {"tokens": tokens, "labels": labels}
+
+
 class InterleaveDataset(IterableDataset):
     def __init__(
         self,

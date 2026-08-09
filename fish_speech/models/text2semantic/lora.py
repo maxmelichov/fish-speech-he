@@ -9,9 +9,11 @@ class LoraConfig:
     lora_alpha: float
     lora_dropout: float = 0.0
     # Valid values: "attention", "mlp", "embeddings", "output",
+    #               "slow_attention", "slow_mlp", "slow_embeddings", "slow_output",
     #               "fast_attention", "fast_mlp", "fast_embeddings", "fast_output"
-    # Unprefixed names target the slow transformer (and fast too for backwards compat).
-    # "fast_*" names target only the fast transformer.
+    # Unprefixed names target BOTH transformers (kept for backwards compat).
+    # "slow_*" targets only the slow (text -> semantic) transformer;
+    # "fast_*" targets only the fast (residual codebook / acoustic) transformer.
     target_modules: list = field(
         default_factory=lambda: ["attention", "mlp", "embeddings", "output"]
     )
@@ -33,17 +35,19 @@ def setup_lora(model, lora_config):
     targets = set(lora_config.target_modules)
     linears = []
 
-    # Slow transformer: targeted by unprefixed names (e.g. "attention")
-    slow_attention = "attention" in targets
-    slow_mlp = "mlp" in targets
-    slow_embeddings = "embeddings" in targets
-    slow_output = "output" in targets
+    # Slow transformer: unprefixed names (backwards compat) OR "slow_*"
+    slow_attention = "attention" in targets or "slow_attention" in targets
+    slow_mlp = "mlp" in targets or "slow_mlp" in targets
+    slow_embeddings = "embeddings" in targets or "slow_embeddings" in targets
+    slow_output = "output" in targets or "slow_output" in targets
 
-    # Fast transformer: targeted by unprefixed names (backwards compat) OR "fast_*"
-    fast_attention = slow_attention or "fast_attention" in targets
-    fast_mlp = slow_mlp or "fast_mlp" in targets
-    fast_embeddings = slow_embeddings or "fast_embeddings" in targets
-    fast_output = slow_output or "fast_output" in targets
+    # Fast transformer: unprefixed names (backwards compat) OR "fast_*".
+    # Note this reads `targets`, not slow_*, so "slow_*" leaves the fast
+    # transformer completely frozen.
+    fast_attention = "attention" in targets or "fast_attention" in targets
+    fast_mlp = "mlp" in targets or "fast_mlp" in targets
+    fast_embeddings = "embeddings" in targets or "fast_embeddings" in targets
+    fast_output = "output" in targets or "fast_output" in targets
 
     if slow_embeddings:
         model.embeddings = _replace_embedding(model.embeddings, lora_config)

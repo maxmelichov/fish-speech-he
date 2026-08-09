@@ -19,15 +19,59 @@ class TextToSemantic(L.LightningModule):
         model: NaiveTransformer,
         optimizer: Any,
         lr_scheduler: Any,
+        semantic_loss_weight: float = 1.0,
+        base_kl_weight: float = 0.0,
     ):
         super().__init__()
 
         self.model = model
         self.optimizer_builder = optimizer
         self.lr_scheduler_builder = lr_scheduler
+        # Weight on the fast-transformer (residual codebook) loss. Qwen3-TTS
+        # uses 0.3 for the equivalent sub-talker term; 1.0 matches upstream
+        # fish-speech behaviour.
+        self.semantic_loss_weight = semantic_loss_weight
+        # Anchor to the frozen base model: reverse KL(p_lora || p_base) on the
+        # token and codebook distributions at loss positions. Plain CE is
+        # teacher-forced and never measures free-running coherence — LoRA
+        # fine-tuning S2-Pro on a new language collapses generation (near-
+        # silent output) at ANY adapter magnitude while CE happily improves.
+        # The anchor penalizes leaving the base model's generative manifold.
+        # The base distribution comes from the SAME model with every LoRA
+        # module's `scaling` set to 0 (bit-exact base, no extra weights).
+        self.base_kl_weight = base_kl_weight
 
     def forward(self, x):
         return self.model(x)
+
+    def _set_lora_scaling(self, factor: float):
+        import loralib
+
+        for module in self.model.modules():
+            if isinstance(module, (loralib.Linear, loralib.Embedding)):
+                module.scaling = (module.lora_alpha / module.r) * factor
+
+    @staticmethod
+    def _reverse_kl(logits, base_logits, mask, chunk: int = 512):
+        """KL(p || p_base) averaged over masked positions. Mode-seeking: keeps
+        the fine-tuned distribution inside the base model's support.
+
+        Computed over gathered mask positions in chunks — a full fp32 softmax
+        over (B, T, 156k vocab) would need ~15 GB."""
+        flat_mask = mask.reshape(-1).bool()
+        idx = flat_mask.nonzero().squeeze(1)
+        if idx.numel() == 0:
+            return logits.sum() * 0.0
+
+        p = logits.reshape(-1, logits.size(-1))[idx]
+        q = base_logits.reshape(-1, base_logits.size(-1))[idx]
+
+        total = p.new_zeros(())
+        for i in range(0, p.size(0), chunk):
+            lp = F.log_softmax(p[i : i + chunk].float(), dim=-1)
+            lq = F.log_softmax(q[i : i + chunk].float(), dim=-1)
+            total = total + (lp.exp() * (lp - lq)).sum()
+        return total / idx.numel()
 
     def on_save_checkpoint(self, checkpoint):
         # Save only LoRA parameters
@@ -144,7 +188,37 @@ class TextToSemantic(L.LightningModule):
             ignore_index=-100,
         )
 
-        loss = base_loss + semantic_loss
+        loss = base_loss + self.semantic_loss_weight * semantic_loss
+
+        if is_train and self.base_kl_weight > 0:
+            with torch.no_grad():
+                self._set_lora_scaling(0.0)
+                base_outputs = self.model(
+                    inp=batch["inputs"],
+                    key_padding_mask=batch["attention_masks"],
+                    labels=batch["labels"],
+                )
+                self._set_lora_scaling(1.0)
+
+            token_mask = (labels[:, 0] != -100).float()
+            kl_token = self._reverse_kl(
+                token_logits, base_outputs.token_logits, token_mask
+            )
+            cb_mask = (filtered_codebook_labels != -100).float()
+            kl_codebook = self._reverse_kl(
+                codebook_logits, base_outputs.codebook_logits, cb_mask
+            )
+            kl = kl_token + self.semantic_loss_weight * kl_codebook
+            loss = loss + self.base_kl_weight * kl
+
+            self.log(
+                f"{stage}/base_kl",
+                kl,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=True,
+                logger=True,
+            )
 
         self.log(
             f"{stage}/loss",

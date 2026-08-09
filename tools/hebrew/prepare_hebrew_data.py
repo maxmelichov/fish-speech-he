@@ -1,12 +1,13 @@
 """Convert Qwen3-TTS-style Hebrew JSONL manifests into the fish-speech dataset layout.
 
 Input rows (one JSON object per line):
-    {"audio": "/abs/path/utt.wav", "orig_text": "<Hebrew with nikud>",
-     "speaker": "female1_hebrew", "duration_sec": 2.74, ...}
+    {"audio": "/abs/path/utt.wav", "text": "<IPA>",
+     "orig_text": "<Hebrew with nikud>", "speaker": "female1_hebrew",
+     "duration_sec": 2.74, ...}
 
 Output layout (audio is symlinked, not copied):
     <output>/<split>/<speaker>/<utt>.wav  -> original audio
-    <output>/<split>/<speaker>/<utt>.lab  -> cleaned Hebrew text
+    <output>/<split>/<speaker>/<utt>.lab  -> text (--text-repr: ipa | nikud)
 
 After this, run tools/vqgan/extract_vq.py and tools/llama/build_dataset.py on
 <output>/<split> (see tools/hebrew/README.md).
@@ -25,6 +26,13 @@ from pathlib import Path
 MASORA_CIRCLE = "֯"
 
 
+# Manifest field holding each text representation.
+TEXT_FIELDS = {
+    "ipa": "text",  # e.g. "ʔˈod ʁˈeɡa ʔanˈi ʔetjaχˈes lihudˈa veʃomʁˈon."
+    "nikud": "orig_text",  # e.g. "עוֹד רֶגַע אֲנִי אֶתְיַיחֵס לִיהוּדָה וְשׁוֹמְרוֹן."
+}
+
+
 def clean_hebrew_text(text: str, keep_masora: bool = False) -> str:
     if not keep_masora:
         text = text.replace(MASORA_CIRCLE, "")
@@ -41,6 +49,7 @@ def process_manifest(
     keep_masora: bool,
     min_sec: float,
     max_sec: float,
+    text_field: str = "text",
 ) -> Counter:
     stats = Counter()
     seen_names: set[Path] = set()
@@ -58,7 +67,7 @@ def process_manifest(
                 stats["skipped_duration"] += 1
                 continue
 
-            text = clean_hebrew_text(row["orig_text"], keep_masora=keep_masora)
+            text = clean_hebrew_text(row.get(text_field) or "", keep_masora=keep_masora)
             if not text:
                 stats["skipped_empty_text"] += 1
                 continue
@@ -97,6 +106,13 @@ def main() -> None:
     parser.add_argument("--eval-manifest", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=Path("data/hebrew"))
     parser.add_argument(
+        "--text-repr",
+        choices=sorted(TEXT_FIELDS),
+        default="ipa",
+        help="Which text representation to write to the .lab files "
+        "(ipa = manifest 'text', nikud = manifest 'orig_text')",
+    )
+    parser.add_argument(
         "--keep-masora",
         action="store_true",
         help="Keep U+05AF silent-letter marks instead of stripping them",
@@ -117,10 +133,15 @@ def main() -> None:
             continue
         out_dir = args.output / split
         stats = process_manifest(
-            manifest, out_dir, args.keep_masora, args.min_sec, args.max_sec
+            manifest,
+            out_dir,
+            args.keep_masora,
+            args.min_sec,
+            args.max_sec,
+            text_field=TEXT_FIELDS[args.text_repr],
         )
         hours = stats.pop("seconds", 0) / 3600
-        print(f"[{split}] {dict(stats)} (~{hours:.1f}h) -> {out_dir}")
+        print(f"[{split}/{args.text_repr}] {dict(stats)} (~{hours:.1f}h) -> {out_dir}")
 
     sys.exit(1 if failed else 0)
 
