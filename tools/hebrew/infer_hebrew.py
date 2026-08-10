@@ -87,7 +87,9 @@ def main() -> None:
     p.add_argument("--text-file", type=Path, default=None)
     p.add_argument("--ipa", action="store_true", help="Input is already IPA; skip G2P")
     p.add_argument("--output", type=Path, default=Path("hebrew_out.wav"))
-    p.add_argument("--base-checkpoint", type=Path, default=Path("checkpoints/s2-pro"))
+    p.add_argument(
+        "--base-checkpoint", type=Path, default=Path("checkpoints/s2-pro-he-ipa")
+    )
     p.add_argument("--codec-checkpoint", type=Path, default=None)
     p.add_argument("--lora-checkpoint", type=Path, default=None)
     p.add_argument("--lora-config", type=str, default="r_32_alpha_64_core")
@@ -139,6 +141,14 @@ def main() -> None:
         ipa = g2p.phonemize(text.strip())
         logger.info(f"G2P: {text.strip()[:60]}... -> {ipa[:60]}...")
 
+    # 1b. Atomic IPA tokens, when the checkpoint carries a map
+    map_path = args.base_checkpoint / "ipa_token_map.json"
+    if map_path.exists():
+        from fish_speech.text.ipa_tokens import convert_ipa, load_token_map
+
+        ipa = convert_ipa(ipa, load_token_map(map_path))
+        logger.info("Converted to atomic IPA tokens")
+
     chunks = split_sentences(ipa, args.max_chars)
     logger.info(f"Split into {len(chunks)} chunk(s)")
 
@@ -182,6 +192,10 @@ def main() -> None:
             if not lab.exists():
                 p.error(f"--ref-text not given and {lab} does not exist")
             ref_text = lab.read_text(encoding="utf-8").strip()
+        if map_path.exists():
+            from fish_speech.text.ipa_tokens import convert_ipa, load_token_map
+
+            ref_text = convert_ipa(ref_text, load_token_map(map_path))
         prompt_tokens = [encode_audio(str(args.ref_audio), codec, device).cpu()]
         prompt_text = [ref_text]
         logger.info(f"Reference: {args.ref_audio.name} ({ref_text[:50]}...)")

@@ -45,8 +45,18 @@ class SampleAudioCallback(L.Callback):
         merge_lora: bool = False,
         save_to_disk: bool = True,
         enabled: bool = True,
+        ipa_token_map: Optional[str] = None,
     ):
         super().__init__()
+
+        # Atomic IPA tokens: texts that look like IPA (and the reference
+        # transcript) are converted through the map; plain-language probes
+        # (e.g. the English regression text) pass through untouched.
+        self._ipa_map = None
+        if ipa_token_map is not None:
+            from fish_speech.text.ipa_tokens import load_token_map
+
+            self._ipa_map = load_token_map(ipa_token_map)
 
         self.texts = list(texts)
         self.codec_checkpoint_path = codec_checkpoint_path
@@ -112,6 +122,7 @@ class SampleAudioCallback(L.Callback):
         self._set_eval(model)
         try:
             for idx, text in enumerate(self.texts):
+                text = self._convert_if_ipa(text)
                 segments = [
                     r.codes
                     for r in generate_long(
@@ -228,6 +239,13 @@ class SampleAudioCallback(L.Callback):
         self._codec = None
         self._prompt_tokens = None
 
+    def _convert_if_ipa(self, text: str) -> str:
+        if self._ipa_map is None or text is None:
+            return text
+        from fish_speech.text.ipa_tokens import convert_ipa, looks_like_ipa
+
+        return convert_ipa(text, self._ipa_map) if looks_like_ipa(text) else text
+
     def _get_prompt(self, codec, device):
         """Encode the reference audio once, for voice-cloning style samples."""
         if self.prompt_audio is None or self.prompt_text is None:
@@ -240,7 +258,7 @@ class SampleAudioCallback(L.Callback):
 
         # generate_long expects lists (it calls bool(prompt_tokens), which is
         # ambiguous on a bare tensor).
-        return [self._prompt_tokens], [self.prompt_text]
+        return [self._prompt_tokens], [self._convert_if_ipa(self.prompt_text)]
 
     @staticmethod
     def _teardown_caches(model):

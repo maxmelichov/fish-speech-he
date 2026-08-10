@@ -9,7 +9,8 @@ max_length: 2048
 # generate_long() refuses prompts longer than (max_seq_len - 2048), so sampling
 # during training needs headroom above the 2048-token training sequences.
 model_max_length: 4096
-pretrained_ckpt_path: checkpoints/s2-pro
+# s2-pro + 26 atomic Hebrew-IPA tokens (tools/hebrew/build_ipa_checkpoint.py)
+pretrained_ckpt_path: checkpoints/s2-pro-he-ipa
 
 # Lightning Trainer
 trainer:
@@ -43,6 +44,7 @@ train_dataset:
   use_speaker: false
   interactive_prob: 0.7  # unused by this dataset; kept for signature compat
   ref_prob: 0.8
+  ipa_token_map: ${pretrained_ckpt_path}/ipa_token_map.json
 
 val_dataset:
   _target_: fish_speech.datasets.semantic.InferenceMatchedIterableDataset
@@ -54,6 +56,7 @@ val_dataset:
   use_speaker: false
   interactive_prob: 0.7  # unused by this dataset; kept for signature compat
   ref_prob: 0.8
+  ipa_token_map: ${pretrained_ckpt_path}/ipa_token_map.json
 
 data:
   _target_: fish_speech.datasets.semantic.SemanticDataModule
@@ -113,6 +116,7 @@ callbacks:
     _target_: fish_speech.callbacks.SampleAudioCallback
     every_n_train_steps: 200
     codec_checkpoint_path: ${pretrained_ckpt_path}/codec.pth
+    ipa_token_map: ${pretrained_ckpt_path}/ipa_token_map.json
     max_new_tokens: 512      # ~24s of audio at the codec's ~21.5Hz frame rate
     temperature: 0.7
     top_p: 0.7

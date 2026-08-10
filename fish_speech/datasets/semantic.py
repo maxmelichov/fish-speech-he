@@ -480,16 +480,30 @@ class InferenceMatchedIterableDataset(AutoTextSemanticInstructionIterableDataset
     conditioned on a same-speaker reference utterance.
     """
 
-    def __init__(self, *args, ref_prob: float = 0.8, **kwargs):
+    def __init__(
+        self, *args, ref_prob: float = 0.8, ipa_token_map: str | None = None, **kwargs
+    ):
         super().__init__(*args, **kwargs)
         assert 0 <= ref_prob <= 1, "ref_prob must be in [0, 1]"
         self.ref_prob = ref_prob
+        # Atomic IPA tokens: convert every text through the map so IPA "j"
+        # etc. become dedicated tokens instead of English-biased BPE pieces.
+        self._ipa_map = None
+        if ipa_token_map is not None:
+            from fish_speech.text.ipa_tokens import load_token_map
+
+            self._ipa_map = load_token_map(ipa_token_map)
+
+    def _maybe_convert(self, text: str) -> str:
+        if self._ipa_map is None:
+            return text
+        from fish_speech.text.ipa_tokens import convert_ipa
+
+        return convert_ipa(text, self._ipa_map)
 
     @staticmethod
     def _codes_tensor(sentence) -> torch.Tensor:
-        return torch.tensor(
-            [x.values for x in sentence.semantics], dtype=torch.int32
-        )
+        return torch.tensor([x.values for x in sentence.semantics], dtype=torch.int32)
 
     def _build_conversation(self, ref, targets):
         from fish_speech.conversation import Conversation, Message
@@ -589,7 +603,7 @@ class InferenceMatchedIterableDataset(AutoTextSemanticInstructionIterableDataset
         if len(samples) >= 2 and random.random() < self.ref_prob:
             sentence = samples.pop()
             ref = (
-                clean_text(random.choice(sentence.texts)),
+                self._maybe_convert(clean_text(random.choice(sentence.texts))),
                 self._codes_tensor(sentence),
             )
 
@@ -599,7 +613,7 @@ class InferenceMatchedIterableDataset(AutoTextSemanticInstructionIterableDataset
         for sentence in samples:
             targets.append(
                 (
-                    clean_text(random.choice(sentence.texts)),
+                    self._maybe_convert(clean_text(random.choice(sentence.texts))),
                     self._codes_tensor(sentence),
                 )
             )

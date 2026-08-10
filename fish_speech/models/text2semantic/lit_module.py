@@ -74,14 +74,14 @@ class TextToSemantic(L.LightningModule):
         return total / idx.numel()
 
     def on_save_checkpoint(self, checkpoint):
-        # Save only LoRA parameters
+        # Save only the fine-tuned parameters: LoRA + trainable IPA embeddings
         state_dict = checkpoint["state_dict"]
         use_lora = any("lora" in name for name in state_dict.keys())
         if not use_lora:
             return
 
         for name in list(state_dict.keys()):
-            if "lora" not in name:
+            if "lora" not in name and "ipa_embeddings" not in name:
                 state_dict.pop(name)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:

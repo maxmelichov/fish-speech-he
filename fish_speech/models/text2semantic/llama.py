@@ -51,6 +51,13 @@ class BaseModelArgs:
     semantic_begin_id: int = 0
     semantic_end_id: int = 0
 
+    # Atomic IPA tokens (appended to the tokenizer past the base vocab).
+    # ipa_token_start is the first extended id; ids >= it are looked up in a
+    # separate trainable `ipa_embeddings` table instead of `embeddings`.
+    # Output logits stay at vocab_size — the extended ids are input-only.
+    num_ipa_tokens: int = 0
+    ipa_token_start: int = 0
+
     # Gradient checkpointing
     use_gradient_checkpointing: bool = True
 
@@ -123,6 +130,8 @@ class BaseModelArgs:
             initializer_range=tc.get("initializer_range", 0.02),
             semantic_begin_id=data.get("semantic_start_token_id", 0),
             semantic_end_id=data.get("semantic_end_token_id", 0),
+            num_ipa_tokens=data.get("num_ipa_tokens", 0),
+            ipa_token_start=data.get("ipa_token_start", 0),
             scale_codebook_embeddings=True,
             norm_fastlayer_input=True,
             audio_embed_dim=adc.get("text_dim", tc["dim"]),
@@ -264,6 +273,9 @@ class BaseTransformer(nn.Module):
             config.codebook_size * config.num_codebooks,
             config.dim,
         )
+        # Atomic IPA tokens: input-only extended vocab (see BaseModelArgs).
+        if config.num_ipa_tokens > 0:
+            self.ipa_embeddings = nn.Embedding(config.num_ipa_tokens, config.dim)
         self.layers = nn.ModuleList(
             TransformerBlock(config, use_sdpa=True) for _ in range(config.n_layer)
         )
@@ -323,6 +335,22 @@ class BaseTransformer(nn.Module):
                 dtype=dtype,
             )
 
+    def embed_text_ids(self, token_ids: Tensor) -> Tensor:
+        """Text-token lookup with atomic-IPA routing. Ids >= ipa_token_start
+        come from the trainable `ipa_embeddings` table; everything else from
+        the (frozen, tied) base table. Pure tensor ops — compile-friendly."""
+        if getattr(self.config, "num_ipa_tokens", 0) <= 0:
+            return self.embeddings(token_ids)
+
+        start = self.config.ipa_token_start
+        is_ext = token_ids >= start
+        base = self.embeddings(
+            torch.where(is_ext, torch.zeros_like(token_ids), token_ids)
+        )
+        ext_idx = (token_ids - start).clamp(min=0, max=self.config.num_ipa_tokens - 1)
+        ext = self.ipa_embeddings(ext_idx)
+        return torch.where(is_ext.unsqueeze(-1), ext, base)
+
     def embed(self, inp: Tensor) -> Tensor:
         embeds = []
 
@@ -340,7 +368,7 @@ class BaseTransformer(nn.Module):
 
         vq_embeds_sum[~is_semantic] = 0
 
-        x = self.embeddings(inp[:, 0]) + vq_embeds_sum
+        x = self.embed_text_ids(inp[:, 0]) + vq_embeds_sum
 
         # Must match forward_generate() exactly: with scale_codebook_embeddings
         # (S2-Pro sets it True) the inference path divides semantic positions by
@@ -429,7 +457,7 @@ class BaseTransformer(nn.Module):
         )
 
         vq_embeds_sum[~vq_masks] = 0
-        x = self.embeddings(inp[:, 0]) + vq_embeds_sum
+        x = self.embed_text_ids(inp[:, 0]) + vq_embeds_sum
 
         if self.config.scale_codebook_embeddings:
             vq_masks_expanded = vq_masks.unsqueeze(-1).expand_as(x)
@@ -605,9 +633,46 @@ class BaseTransformer(nn.Module):
             err = model.load_state_dict(weights, strict=False, assign=True)
             logger.info(f"Model weights loaded - Status: {err}")
 
+            if config.num_ipa_tokens > 0:
+                # weights load with assign=True and keep the checkpoint dtype
+                # (bf16); the fresh fp32 module must match it.
+                self_dtype = model.embeddings.weight.dtype
+                model.ipa_embeddings.to(self_dtype)
+                ipa_file = Path(path) / "ipa_embeddings.pt"
+                if ipa_file.exists():
+                    model.ipa_embeddings.weight.data.copy_(
+                        torch.load(ipa_file, map_location="cpu", weights_only=True)
+                    )
+                    logger.info(f"Loaded {config.num_ipa_tokens} IPA embeddings")
+                else:
+                    # Qwen3-TTS-style init: mean of the symbol's original
+                    # BPE-piece embeddings (the extended tokenizer still
+                    # encodes the raw symbol into its old pieces).
+                    from fish_speech.text.ipa_tokens import load_token_map
+
+                    token_map = load_token_map(Path(path) / "ipa_token_map.json")
+                    with torch.no_grad():
+                        for sym, tok_str in token_map.items():
+                            tok_ids = tokenizer.encode(tok_str)
+                            assert len(tok_ids) == 1, (sym, tok_str, tok_ids)
+                            row = tok_ids[0] - config.ipa_token_start
+                            piece_ids = torch.tensor(tokenizer.encode(sym))
+                            model.ipa_embeddings.weight[row] = model.embeddings.weight[
+                                piece_ids
+                            ].mean(0)
+                    torch.save(model.ipa_embeddings.weight.data.clone(), ipa_file)
+                    logger.info(
+                        f"Initialized {config.num_ipa_tokens} IPA embeddings "
+                        f"from BPE-piece means -> {ipa_file}"
+                    )
+
         if lora_config is not None:
             setup_lora(model, lora_config)
             logger.info(f"LoRA setup: {lora_config}")
+            if config.num_ipa_tokens > 0:
+                # mark_only_lora_as_trainable froze it; the new rows must learn.
+                model.ipa_embeddings.weight.requires_grad_(True)
+                logger.info("IPA embeddings kept trainable alongside LoRA")
 
         return model
 
