@@ -1,6 +1,6 @@
 # Hebrew TTS with S2-Pro — inference and LoRA fine-tuning
 
-![Fish Audio S2-Pro Hebrew](https://cdn-uploads.huggingface.co/production/uploads/63453ab89ad67b3d069effdf/Kq3sPWLcMbdmMHmqZWqPs.png)
+<img src="../../docs/assets/fih.png" alt="Fish Audio S2-Pro Hebrew" width="420">
 
 Released weights: [`notmax123/Fish-Audio-S2-Pro-He`](https://huggingface.co/notmax123/Fish-Audio-S2-Pro-He)
 — a 67M-parameter LoRA adapter plus 26 atomic Hebrew-IPA tokens, on top of the

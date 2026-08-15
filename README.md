@@ -51,7 +51,7 @@
 
 ## 🇮🇱 Hebrew (this fork)
 
-![Fish Audio S2-Pro Hebrew](https://cdn-uploads.huggingface.co/production/uploads/63453ab89ad67b3d069effdf/Kq3sPWLcMbdmMHmqZWqPs.png)
+<img src="docs/assets/fih.png" alt="Fish Audio S2-Pro Hebrew" width="420">
 
 This fork adds Hebrew TTS to S2-Pro: a LoRA adapter plus 26 atomic Hebrew-IPA
 tokens, released as
