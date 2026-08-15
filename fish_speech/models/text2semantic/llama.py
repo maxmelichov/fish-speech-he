@@ -639,7 +639,15 @@ class BaseTransformer(nn.Module):
                 self_dtype = model.embeddings.weight.dtype
                 model.ipa_embeddings.to(self_dtype)
                 ipa_file = Path(path) / "ipa_embeddings.pt"
-                if ipa_file.exists():
+                if "ipa_embeddings.weight" in weights:
+                    # A merged/fine-tuned checkpoint already carries the trained
+                    # table (merge_lora writes it into model.pth). Re-initializing
+                    # from BPE means here would silently throw that training away.
+                    logger.info(
+                        f"Using the {config.num_ipa_tokens} IPA embeddings "
+                        "found in the checkpoint weights"
+                    )
+                elif ipa_file.exists():
                     model.ipa_embeddings.weight.data.copy_(
                         torch.load(ipa_file, map_location="cpu", weights_only=True)
                     )

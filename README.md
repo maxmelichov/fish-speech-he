@@ -49,6 +49,33 @@
 > **Legal Disclaimer**  
 > We do not hold any responsibility for any illegal usage of the codebase. Please refer to your local laws about DMCA and other related laws.
 
+## 🇮🇱 Hebrew (this fork)
+
+![Fish Audio S2-Pro Hebrew](https://cdn-uploads.huggingface.co/production/uploads/63453ab89ad67b3d069effdf/Kq3sPWLcMbdmMHmqZWqPs.png)
+
+This fork adds Hebrew TTS to S2-Pro: a LoRA adapter plus 26 atomic Hebrew-IPA
+tokens, released as
+**[`notmax123/Fish-Audio-S2-Pro-He`](https://huggingface.co/notmax123/Fish-Audio-S2-Pro-He)**.
+Voice cloning and the other languages keep working.
+
+```bash
+bash tools/hebrew/setup_hebrew.sh    # base weights + adapter
+pip install renikud-plus             # Hebrew G2P
+
+python tools/hebrew/infer_hebrew.py \
+    --text "שלום, מה שלומך היום?" \
+    --lora-checkpoint checkpoints/hebrew/hebrew_lora_step2200.safetensors \
+    --output out.wav
+```
+
+Fine-tuning on your own Hebrew data is one command
+(`AUDIO_ROOT=my_audio tools/hebrew/run_hebrew_pipeline.sh`).
+See **[tools/hebrew/README.md](tools/hebrew/README.md)** for the full guide.
+
+It also fixes an upstream train/inference **embedding-scale mismatch** that
+breaks S2-Pro fine-tunes in *any* language — see
+[the write-up](tools/hebrew/README.md#the-embedding-scale-bug).
+
 ## Quick Start
 
 ### For Human

@@ -69,8 +69,14 @@ def split_sentences(text: str, max_chars: int) -> list[str]:
 
 
 def load_lora_checkpoint(model, checkpoint_path: Path) -> None:
-    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state = ckpt.get("state_dict", ckpt)
+    """Load a LoRA adapter, either a Lightning .ckpt or a .safetensors export."""
+    if checkpoint_path.suffix == ".safetensors":
+        from safetensors.torch import load_file
+
+        state = load_file(str(checkpoint_path))
+    else:
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        state = ckpt.get("state_dict", ckpt)
     state = {k[len("model.") :]: v for k, v in state.items() if k.startswith("model.")}
     lora_keys = [k for k in state if "lora" in k]
     if not lora_keys:
@@ -92,7 +98,9 @@ def main() -> None:
     )
     p.add_argument("--codec-checkpoint", type=Path, default=None)
     p.add_argument("--lora-checkpoint", type=Path, default=None)
-    p.add_argument("--lora-config", type=str, default="r_32_alpha_64_core")
+    # The released adapter (notmax123/Fish-Audio-S2-Pro-He) was trained with
+    # r_32_alpha_16_core; a mismatched config silently rescales the delta.
+    p.add_argument("--lora-config", type=str, default="r_32_alpha_16_core")
     p.add_argument(
         "--lora-scale",
         type=float,

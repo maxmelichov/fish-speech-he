@@ -72,6 +72,15 @@ def merge(lora_config, base_weight, lora_weight, output):
     # Trigger eval mode to merge lora
     llama_model.eval()
     llama_model.save_pretrained(output, drop_lora=True)
+
+    # The atomic-IPA map is part of the inference contract (text must be
+    # converted with the same map the model was trained on), and save_pretrained
+    # only knows about weights/config/tokenizer. Carry it over from the base.
+    ipa_map = Path(base_weight) / "ipa_token_map.json"
+    if ipa_map.exists():
+        shutil.copy(ipa_map, output / "ipa_token_map.json")
+        logger.info("Copied ipa_token_map.json into the merged checkpoint")
+
     logger.info(f"Saved merged model to {output}, validating")
 
     new_state_dict = torch.load(output / "model.pth", map_location="cpu")
